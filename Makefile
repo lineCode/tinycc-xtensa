@@ -100,16 +100,17 @@ TCC_X = i386 x86_64 i386-win32 x86_64-win32 x86_64-osx arm arm64 arm-wince c67 x
 LIBTCC1_X = i386 x86_64 i386-win32 x86_64-win32 x86_64-osx arm arm64 arm-wince
 
 PROGS_CROSS = $(foreach X,$(TCC_X),$X-tcc$(EXESUF))
-LIBTCC1_CROSS = $(foreach X,$(LIBTCC1_X),libtcc1-$X.a)
+LIBTCC1_CROSS = $(foreach X,$(LIBTCC1_X),$X-libtcc1.a)
 
 # build cross compilers & libs
 cross: $(LIBTCC1_CROSS) $(PROGS_CROSS)
 
 # build specific cross compiler & lib
-cross-%: %-tcc$(EXESUF) libtcc1-%.a ;
+cross-%: %-tcc$(EXESUF) %-libtcc1.a ;
 
-install: install$(CFGWIN)
-uninstall: uninstall$(CFGWIN)
+install: ; @$(MAKE) --no-print-directory install$(CFGWIN)
+install-strip: ; @$(MAKE) --no-print-directory install$(CFGWIN) CONFIG_strip=yes
+uninstall: ; @$(MAKE) --no-print-directory uninstall$(CFGWIN)
 
 ifdef CONFIG_cross
 all : cross
@@ -147,10 +148,10 @@ DEFINES += $(DEF-$(or $(findstring win,$T),unx))
 
 ifneq ($(X),)
 ifeq ($(CONFIG_WIN32),yes)
-DEF-win += -DTCC_LIBTCC1="\"libtcc1-$T.a\""
-DEF-unx += -DTCC_LIBTCC1="\"lib/libtcc1-$T.a\""
+DEF-win += -DTCC_LIBTCC1="\"$(X)libtcc1.a\""
+DEF-unx += -DTCC_LIBTCC1="\"lib/$(X)libtcc1.a\""
 else
-DEF-all += -DTCC_LIBTCC1="\"libtcc1-$T.a\""
+DEF-all += -DTCC_LIBTCC1="\"$(X)libtcc1.a\""
 DEF-win += -DCONFIG_TCCDIR="\"$(tccdir)/win32\""
 endif
 endif
@@ -223,34 +224,36 @@ libtcc.so: LDFLAGS+=-fPIC
 # windows dynamic libtcc library
 libtcc.dll : $(LIBTCC_OBJ)
 	$(CC) -shared -o $@ $^ $(LDFLAGS)
-
-libtcc.def : libtcc.dll tcc$(EXESUF)
-	./tcc$(EXESUF) -impdef $< -o $@
-
 libtcc.dll : DEFINES += -DLIBTCC_AS_DLL
+
+# import file for windows libtcc.dll
+libtcc.def : libtcc.dll tcc$(EXESUF)
+	$(XTCC) -impdef $< -o $@
+XTCC ?= ./tcc$(EXESUF)
 
 # TinyCC runtime libraries
 libtcc1.a : tcc$(EXESUF) FORCE
-	@$(MAKE) -C lib DEFINES="$(DEF-$T)"
+	@$(MAKE) -C lib DEFINES='$(DEF-$T)'
 
 # Cross libtcc1.a
-libtcc1-%.a : %-tcc$(EXESUF) FORCE
-	@$(MAKE) -C lib DEFINES="$(DEF-$*)" CROSS_TARGET=$*
+%-libtcc1.a : %-tcc$(EXESUF) FORCE
+	@$(MAKE) -C lib DEFINES='$(DEF-$*)' CROSS_TARGET=$*
 
-.PRECIOUS: libtcc1-%.a
+.PRECIOUS: %-libtcc1.a
 FORCE:
 
 # --------------------------------------------------------------------------
 # documentation and man page
 tcc-doc.html: tcc-doc.texi
-	-makeinfo --no-split --html --number-sections -o $@ $<
+	makeinfo --no-split --html --number-sections -o $@ $< || true
 
 tcc.1: tcc-doc.texi
-	-$(TOPSRC)/texi2pod.pl $< tcc.pod
-	-pod2man --section=1 --center="Tiny C Compiler" --release="$(VERSION)" tcc.pod > $@
+	$(TOPSRC)/texi2pod.pl $< tcc.pod \
+	&& pod2man --section=1 --center="Tiny C Compiler" --release="$(VERSION)" tcc.pod >tmp.1 \
+	&& mv tmp.1 $@ || rm -f tmp.1
 
 tcc-doc.info: tcc-doc.texi
-	-makeinfo $<
+	makeinfo $< || true
 
 # --------------------------------------------------------------------------
 # install
@@ -258,35 +261,29 @@ tcc-doc.info: tcc-doc.texi
 INSTALL = install -m644
 INSTALLBIN = install -m755 $(STRIP_$(CONFIG_strip))
 STRIP_yes = -s
-install-strip: install
-install-strip: CONFIG_strip = yes
 
-TRY-INSTALL = $(if $(wildcard $1),mkdir -p $2 && $(INSTALL) $1 $2)
-LIBTCC1_W = $(wildcard $(filter %-win32.a %-wince.a,$(LIBTCC1_CROSS)))
-LIBTCC1_U = $(wildcard $(filter-out $(LIBTCC1_W),$(LIBTCC1_CROSS)))
-PROGS_X = $(wildcard $(PROGS_CROSS))
+LIBTCC1_W = $(filter %-win32-libtcc1.a %-wince-libtcc1.a,$(LIBTCC1_CROSS))
+LIBTCC1_U = $(filter-out $(LIBTCC1_W),$(LIBTCC1_CROSS))
+IB = $(if $1,mkdir -p $2 && $(INSTALLBIN) $1 $2)
+IBw = $(call IB,$(wildcard $1),$2)
+IF = $(if $1,mkdir -p $2 && $(INSTALL) $1 $2)
+IFw = $(call IF,$(wildcard $1),$2)
+IR = mkdir -p $2 && cp -r $1/. $2
 
 # install progs & libs
 install-unx:
-	mkdir -p "$(bindir)"
-	$(INSTALLBIN) $(PROGS) $(PROGS_X) "$(bindir)"
-	mkdir -p "$(tccdir)"
-	$(INSTALL) $(LIBTCC1) $(LIBTCC1_U) "$(tccdir)"
-	mkdir -p "$(tccdir)/include"
-	$(INSTALL) $(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h "$(tccdir)/include"
-	mkdir -p "$(libdir)"
-	$(INSTALL) $(LIBTCC) "$(libdir)"
-	mkdir -p "$(includedir)"
-	$(INSTALL) $(TOPSRC)/libtcc.h "$(includedir)"
-	$(call TRY-INSTALL,tcc.1,"$(mandir)/man1")
-	$(call TRY-INSTALL,tcc-doc.info,"$(infodir)")
-	$(call TRY-INSTALL,tcc-doc.html,"$(docdir)")
-ifneq "$(LIBTCC1_W)" ""
-	mkdir -p "$(tccdir)/win32/lib"
-	$(INSTALL) $(TOPSRC)/win32/lib/*.def $(LIBTCC1_W) "$(tccdir)/win32/lib"
-	mkdir -p "$(tccdir)/win32/include"
-	cp -r $(TOPSRC)/win32/include/. "$(tccdir)/win32/include"
-	$(INSTALL) $(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h "$(tccdir)/win32/include"
+	$(call IBw,$(PROGS) $(PROGS_CROSS),"$(bindir)")
+	$(call IFw,$(LIBTCC1) $(LIBTCC1_U),"$(tccdir)")
+	$(call IF,$(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h,"$(tccdir)/include")
+	$(call $(if $(findstring .so,$(LIBTCC)),IBw,IFw),$(LIBTCC),"$(libdir)")
+	$(call IF,$(TOPSRC)/libtcc.h,"$(includedir)")
+	$(call IFw,tcc.1,"$(mandir)/man1")
+	$(call IFw,tcc-doc.info,"$(infodir)")
+	$(call IFw,tcc-doc.html,"$(docdir)")
+ifneq "$(wildcard $(LIBTCC1_W))" ""
+	$(call IFw,$(TOPSRC)/win32/lib/*.def $(LIBTCC1_W),"$(tccdir)/win32/lib")
+	$(call IR,$(TOPSRC)/win32/include,"$(tccdir)/win32/include")
+	$(call IF,$(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h,"$(tccdir)/win32/include")
 endif
 
 # uninstall
@@ -299,32 +296,31 @@ uninstall-unx:
 
 # install progs & libs on windows
 install-win:
-	mkdir -p "$(tccdir)"
-	$(INSTALL) $(PROGS) $(subst libtcc.a,,$(LIBTCC)) $(PROGS_X) "$(tccdir)"
-	mkdir -p "$(tccdir)/lib"
-	$(INSTALL) $(TOPSRC)/win32/lib/*.def "$(tccdir)/lib"
-	$(INSTALL) libtcc1.a $(LIBTCC1_W) "$(tccdir)/lib"
-	mkdir -p "$(tccdir)/include"
-	cp -r $(TOPSRC)/win32/include/. "$(tccdir)/include"
-	$(INSTALL) $(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h "$(tccdir)/include"
-	mkdir -p "$(tccdir)/examples"
-	cp -r $(TOPSRC)/win32/examples/. "$(tccdir)/examples"
-	$(INSTALL) $(TOPSRC)/tests/libtcc_test.c "$(tccdir)/examples"
-	mkdir -p "$(tccdir)/libtcc"
-	$(INSTALL) $(TOPSRC)/libtcc.h $(subst .dll,.def,$(LIBTCC)) "$(tccdir)/libtcc"
-	mkdir -p "$(tccdir)/doc"
-	$(INSTALL) $(TOPSRC)/win32/tcc-win32.txt $(wildcard tcc-doc.html) "$(tccdir)/doc"
-ifneq "$(LIBTCC1_U)" ""
-	$(INSTALL) $(LIBTCC1_U) "$(tccdir)/lib"
-	mkdir -p "$(tccdir)/lib/include";
-	$(INSTALL) $(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h "$(tccdir)/lib/include"
+	$(call IBw,$(PROGS) $(PROGS_CROSS) $(subst libtcc.a,,$(LIBTCC)),"$(bindir)")
+	$(call IF,$(TOPSRC)/win32/lib/*.def,"$(tccdir)/lib")
+	$(call IFw,libtcc1.a $(LIBTCC1_W),"$(tccdir)/lib")
+	$(call IF,$(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h,"$(tccdir)/include")
+	$(call IR,$(TOPSRC)/win32/include,"$(tccdir)/include")
+	$(call IR,$(TOPSRC)/win32/examples,"$(tccdir)/examples")
+	$(call IF,$(TOPSRC)/tests/libtcc_test.c,"$(tccdir)/examples")
+	$(call IFw,$(TOPSRC)/libtcc.h $(subst .dll,.def,$(LIBTCC)),"$(libdir)")
+	$(call IFw,$(TOPSRC)/win32/tcc-win32.txt tcc-doc.html,"$(docdir)")
+ifneq "$(wildcard $(LIBTCC1_U))" ""
+	$(call IFw,$(LIBTCC1_U),"$(tccdir)/lib")
+	$(call IF,$(TOPSRC)/include/*.h $(TOPSRC)/tcclib.h,"$(tccdir)/lib/include")
 endif
 
 # the msys-git shell works to configure && make except it does not have install
+ifeq "$(and $(CONFIG_WIN32),$(shell which install >/dev/null 2>&1 || echo no))" "no"
 install-win : INSTALL = cp
+install-win : INSTALLBIN = cp
+endif
 
 # uninstall on windows
 uninstall-win:
+	@rm -fv $(foreach P,$(PROGS) $(PROGS_CROSS) libtcc.dll,"$(bindir)/$P")
+	@rm -fv $(foreach F,tcc-doc.html tcc-win32.txt,"$(docdir)/$F")
+	@rm -fv $(foreach F,libtcc.h libtcc.def libtcc.a,"$(libdir)/$F")
 	rm -r "$(tccdir)"
 
 # --------------------------------------------------------------------------
@@ -359,11 +355,14 @@ test:
 tests2.%:
 	$(MAKE) -C tests/tests2 $@
 
+testspp.%:
+	$(MAKE) -C tests/pp $@
+
 clean:
-	rm -f $(PROGS) $(PROGS_CROSS) tcc_p$(EXESUF) tcc.pod
+	rm -f tcc$(EXESUF) tcc_p$(EXESUF) *-tcc$(EXESUF) tcc.pod
 	rm -f  *~ *.o *.a *.so* *.out *.log lib*.def *.exe *.dll a.out tags TAGS
-	@$(MAKE) -C tests $@
 	@$(MAKE) -C lib $@
+	@$(MAKE) -C tests $@
 
 distclean: clean
 	rm -f config.h config.mak config.texi tcc.1 tcc-doc.info tcc-doc.html
@@ -404,6 +403,8 @@ help:
 	@echo ""
 	@echo "make tests2.all / make tests2.37 / make tests2.37+"
 	@echo "   run all/single test(s) from tests2, optionally update .expect"
+	@echo "make testspp.all / make testspp.17"
+	@echo "   run all/single test(s) from tests/pp"
 	@echo ""
 	@echo "Other supported make targets:"
 	@echo "   install install-strip tags ETAGS tar clean distclean help"

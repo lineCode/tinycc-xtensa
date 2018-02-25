@@ -500,12 +500,13 @@ ST_FUNC void gen_expr64(ExprValue *pe)
 static void gen_disp32(ExprValue *pe)
 {
     Sym *sym = pe->sym;
-    if (sym && sym->r == cur_text_section->sh_num) {
+    ElfSym *esym = elfsym(sym);
+    if (esym && esym->st_shndx == cur_text_section->sh_num) {
         /* same section: we can output an absolute value. Note
            that the TCC compiler behaves differently here because
            it always outputs a relocation to ease (future) code
            elimination in the linker */
-        gen_le32(pe->v + sym->jnext - ind - 4);
+        gen_le32(pe->v + esym->st_value - ind - 4);
     } else {
         if (sym && sym->type.t == VT_VOID) {
             sym->type.t = VT_FUNC;
@@ -726,6 +727,7 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
 
     s = 0; /* avoid warning */
 
+again:
     /* optimize matching by using a lookup table (no hashing is needed
        !) */
     for(pa = asm_instrs; pa->sym != 0; pa++) {
@@ -756,8 +758,9 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
             if (!(opcode >= pa->sym && opcode < pa->sym + NB_TEST_OPCODES))
                 continue;
 	    /* cmovxx is a test opcode but accepts multiple sizes.
-	       TCC doesn't accept the suffixed mnemonic, instead we 
-	       simply force size autodetection always.  */
+	       The suffixes aren't encoded in the table, instead we
+	       simply force size autodetection always and deal with suffixed
+	       variants below when we don't find e.g. "cmovzl".  */
 	    if (pa->instr_type & OPC_WLX)
 	        s = NBWLX - 1;
         } else if (pa->instr_type & OPC_B) {
@@ -843,8 +846,16 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
             tcc_error("bad operand with opcode '%s'",
                   get_tok_str(opcode, NULL));
         } else {
-            tcc_error("unknown opcode '%s'",
-                  get_tok_str(opcode, NULL));
+	    /* Special case for cmovcc, we accept size suffixes but ignore
+	       them, but we don't want them to blow up our tables.  */
+	    TokenSym *ts = table_ident[opcode - TOK_IDENT];
+	    if (ts->len >= 6
+		&& strchr("wlq", ts->str[ts->len-1])
+		&& !memcmp(ts->str, "cmov", 4)) {
+		opcode = tok_alloc(ts->str, ts->len-1)->tok;
+		goto again;
+	    }
+            tcc_error("unknown opcode '%s'", ts->str);
         }
     }
     /* if the size is unknown, then evaluate it (OPC_B or OPC_WL case) */
@@ -1017,16 +1028,14 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
     if (pa->instr_type & OPC_B)
         v += s >= 1;
     if (nb_ops == 1 && pa->op_type[0] == OPT_DISP8) {
-        Sym *sym;
+	ElfSym *esym;
         int jmp_disp;
 
         /* see if we can really generate the jump with a byte offset */
-        sym = ops[0].e.sym;
-        if (!sym)
+	esym = elfsym(ops[0].e.sym);
+        if (!esym || esym->st_shndx != cur_text_section->sh_num)
             goto no_short_jump;
-        if (sym->r != cur_text_section->sh_num)
-            goto no_short_jump;
-        jmp_disp = ops[0].e.v + sym->jnext - ind - 2 - (v >= 0xff);
+        jmp_disp = ops[0].e.v + esym->st_value - ind - 2 - (v >= 0xff);
         if (jmp_disp == (int8_t)jmp_disp) {
             /* OK to generate jump */
 	    ops[0].e.sym = 0;

@@ -26,10 +26,12 @@
 #ifndef _WIN32
 #define stricmp strcasecmp
 #define strnicmp strncasecmp
+#include <sys/stat.h> /* chmod() */
 #endif
 
 #ifdef TCC_TARGET_X86_64
 # define ADDR3264 ULONGLONG
+# define PE_IMAGE_REL IMAGE_REL_BASED_DIR64
 # define REL_TYPE_DIRECT R_X86_64_64
 # define R_XXX_THUNKFIX R_X86_64_PC32
 # define R_XXX_RELATIVE R_X86_64_RELATIVE
@@ -38,6 +40,7 @@
 
 #elif defined TCC_TARGET_ARM
 # define ADDR3264 DWORD
+# define PE_IMAGE_REL IMAGE_REL_BASED_HIGHLOW
 # define REL_TYPE_DIRECT R_ARM_ABS32
 # define R_XXX_THUNKFIX R_ARM_ABS32
 # define R_XXX_RELATIVE R_ARM_RELATIVE
@@ -46,6 +49,7 @@
 
 #elif defined TCC_TARGET_I386
 # define ADDR3264 DWORD
+# define PE_IMAGE_REL IMAGE_REL_BASED_HIGHLOW
 # define REL_TYPE_DIRECT R_386_32
 # define R_XXX_THUNKFIX R_386_32
 # define R_XXX_RELATIVE R_386_RELATIVE
@@ -54,22 +58,6 @@
 
 #endif
 
-#if 0
-#ifdef _WIN32
-void dbg_printf (const char *fmt, ...)
-{
-    char buffer[4000];
-    va_list arg;
-    int x;
-    va_start(arg, fmt);
-    x = vsprintf (buffer, fmt, arg);
-    strcpy(buffer+x, "\n");
-    OutputDebugString(buffer);
-}
-#endif
-#endif
-
-/* ----------------------------------------------------------- */
 #ifndef IMAGE_NT_SIGNATURE
 /* ----------------------------------------------------------- */
 /* definitions below are from winnt.h */
@@ -241,14 +229,19 @@ typedef struct _IMAGE_BASE_RELOCATION {
 #define IMAGE_REL_BASED_MIPS_JMPADDR     5
 #define IMAGE_REL_BASED_SECTION          6
 #define IMAGE_REL_BASED_REL32            7
+#define IMAGE_REL_BASED_DIR64           10
 
 #pragma pack(pop)
 
 /* ----------------------------------------------------------- */
 #endif /* ndef IMAGE_NT_SIGNATURE */
 /* ----------------------------------------------------------- */
-#pragma pack(push, 1)
 
+#ifndef IMAGE_REL_BASED_DIR64
+# define IMAGE_REL_BASED_DIR64 10
+#endif
+
+#pragma pack(push, 1)
 struct pe_header
 {
     IMAGE_DOS_HEADER doshdr;
@@ -281,7 +274,6 @@ struct pe_rsrc_reloc {
     DWORD size;
     WORD type;
 };
-
 #pragma pack(pop)
 
 /* ------------------------------------------------------------- */
@@ -732,6 +724,9 @@ static int pe_write(struct pe_info *pe)
     fseek(op, offsetof(struct pe_header, opthdr.CheckSum), SEEK_SET);
     pe_fwrite(&pe_header.opthdr.CheckSum, sizeof pe_header.opthdr.CheckSum, op, NULL);
     fclose (op);
+#ifndef _WIN32
+    chmod(pe->filename, 0777);
+#endif
 
     if (2 == pe->s1->verbose)
         printf("-------------------------------\n");
@@ -959,7 +954,7 @@ static void pe_build_exports(struct pe_info *pe)
     /* automatically write exports to <output-filename>.def */
     pstrcpy(buf, sizeof buf, pe->filename);
     strcpy(tcc_fileextension(buf), ".def");
-    op = fopen(buf, "w");
+    op = fopen(buf, "wb");
     if (NULL == op) {
         tcc_error_noabort("could not create '%s': %s", buf, strerror(errno));
     } else {
@@ -972,7 +967,7 @@ static void pe_build_exports(struct pe_info *pe)
     for (ord = 0; ord < sym_count; ++ord)
     {
         p = sorted[ord], sym_index = p->index, name = p->name;
-        /* insert actual address later in pe_relocate_rva */
+        /* insert actual address later in relocate_section() */
         put_elf_reloc(symtab_section, pe->thunk,
             func_o, R_XXX_RELATIVE, sym_index);
         *(DWORD*)(pe->thunk->data + name_o)
@@ -1017,7 +1012,7 @@ static void pe_build_reloc (struct pe_info *pe)
             }
             if ((addr -= offset)  < (1<<12)) { /* one block spans 4k addresses */
                 WORD *wp = section_ptr_add(pe->reloc, sizeof (WORD));
-                *wp = addr | IMAGE_REL_BASED_HIGHLOW<<12;
+                *wp = addr | PE_IMAGE_REL<<12;
                 ++count;
                 continue;
             }
@@ -1184,26 +1179,6 @@ static int pe_assign_addresses (struct pe_info *pe)
 
     tcc_free(section_order);
     return 0;
-}
-
-/* ------------------------------------------------------------- */
-static void pe_relocate_rva (struct pe_info *pe, Section *s)
-{
-    Section *sr = s->reloc;
-    ElfW_Rel *rel, *rel_end;
-    rel_end = (ElfW_Rel *)(sr->data + sr->data_offset);
-    for(rel = (ElfW_Rel *)sr->data; rel < rel_end; rel++) {
-        if (ELFW(R_TYPE)(rel->r_info) == R_XXX_RELATIVE) {
-            int sym_index = ELFW(R_SYM)(rel->r_info);
-            DWORD addr = s->sh_addr;
-            if (sym_index) {
-                ElfW(Sym) *sym = (ElfW(Sym) *)symtab_section->data + sym_index;
-                addr = sym->st_value;
-            }
-            // printf("reloc rva %08x %08x %s\n", (DWORD)rel->r_offset, addr, s->name);
-            *(DWORD*)(s->data + rel->r_offset) += addr - pe->imagebase;
-        }
-    }
 }
 
 /*----------------------------------------------------------------------------*/
@@ -1471,7 +1446,7 @@ static void pe_print_sections(TCCState *s1, const char *fname)
 /* ------------------------------------------------------------- */
 /* helper function for load/store to insert one more indirection */
 
-#ifndef TCC_TARGET_ARM
+#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
 ST_FUNC SValue *pe_getimport(SValue *sv, SValue *v2)
 {
     int r2;
@@ -1638,7 +1613,7 @@ static int pe_load_res(TCCState *s1, int fd)
 {
     struct pe_rsrc_header hdr;
     Section *rsrc_section;
-    int i, ret = -1;
+    int i, ret = -1, sym_index;
     BYTE *ptr;
     unsigned offs;
 
@@ -1656,8 +1631,8 @@ static int pe_load_res(TCCState *s1, int fd)
     if (!read_mem(fd, offs, ptr, hdr.sectionhdr.SizeOfRawData))
         goto quit;
     offs = hdr.sectionhdr.PointerToRelocations;
-    for (i = 0; i < hdr.sectionhdr.NumberOfRelocations; ++i)
-    {
+    sym_index = put_elf_sym(symtab_section, 0, 0, 0, 0, rsrc_section->sh_num, ".rsrc");
+    for (i = 0; i < hdr.sectionhdr.NumberOfRelocations; ++i) {
         struct pe_rsrc_reloc rel;
         if (!read_mem(fd, offs, &rel, sizeof rel))
             goto quit;
@@ -1665,7 +1640,7 @@ static int pe_load_res(TCCState *s1, int fd)
         if (rel.type != RSRC_RELTYPE)
             goto quit;
         put_elf_reloc(symtab_section, rsrc_section,
-            rel.offset, R_XXX_RELATIVE, 0);
+            rel.offset, R_XXX_RELATIVE, sym_index);
         offs += sizeof rel;
     }
     ret = 0;
@@ -1784,9 +1759,9 @@ static unsigned pe_add_uwwind_info(TCCState *s1)
     if (NULL == s1->uw_pdata) {
         s1->uw_pdata = find_section(tcc_state, ".pdata");
         s1->uw_pdata->sh_addralign = 4;
-        s1->uw_sym = put_elf_sym(symtab_section, 0, 0, 0, 0, text_section->sh_num, NULL);
     }
-
+    if (0 == s1->uw_sym)
+        s1->uw_sym = put_elf_sym(symtab_section, 0, 0, 0, 0, text_section->sh_num, ".uw_base");
     if (0 == s1->uw_offs) {
         /* As our functions all have the same stackframe, we use one entry for all */
         static const unsigned char uw_info[] = {
@@ -1835,7 +1810,7 @@ ST_FUNC void pe_add_unwind_data(unsigned start, unsigned end, unsigned stack)
 
     /* put relocations on it */
     for (n = o + sizeof *p; o < n; o += sizeof p->BeginAddress)
-        put_elf_reloc(symtab_section, pd, o,  R_X86_64_RELATIVE, s1->uw_sym);
+        put_elf_reloc(symtab_section, pd, o, R_XXX_RELATIVE, s1->uw_sym);
 }
 #endif
 /* ------------------------------------------------------------- */
@@ -1975,8 +1950,7 @@ ST_FUNC int pe_output_file(TCCState *s1, const char *filename)
 
     tcc_add_bcheck(s1);
     pe_add_runtime(s1, &pe);
-    relocate_common_syms(); /* assign bss addresses */
-    tcc_add_linker_symbols(s1);
+    resolve_common_syms(s1);
     pe_set_options(s1, &pe);
 
     ret = pe_check_symbols(&pe);
@@ -1985,11 +1959,11 @@ ST_FUNC int pe_output_file(TCCState *s1, const char *filename)
     else if (filename) {
         pe_assign_addresses(&pe);
         relocate_syms(s1, s1->symtab, 0);
+        s1->pe_imagebase = pe.imagebase;
         for (i = 1; i < s1->nb_sections; ++i) {
             Section *s = s1->sections[i];
             if (s->reloc) {
                 relocate_section(s1, s);
-                pe_relocate_rva(&pe, s);
             }
         }
         pe.start_addr = (DWORD)
@@ -2005,6 +1979,9 @@ ST_FUNC int pe_output_file(TCCState *s1, const char *filename)
         pe.thunk = data_section;
         pe_build_imports(&pe);
         s1->runtime_main = pe.start_symbol;
+#ifdef TCC_TARGET_X86_64
+        s1->uw_pdata = find_section(s1, ".pdata");
+#endif
 #endif
     }
 

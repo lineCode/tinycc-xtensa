@@ -257,7 +257,8 @@ ST_FUNC void gen_addr64(int r, Sym *sym, int64_t c)
 /* output constant with relocation if 'r & VT_SYM' is true */
 ST_FUNC void gen_addrpc32(int r, Sym *sym, int c)
 {
-    greloca(cur_text_section, sym, ind, R_X86_64_PC32, 0);
+    if (r & VT_SYM)
+        greloca(cur_text_section, sym, ind, R_X86_64_PC32, c-4), c=4;
     gen_le32(c-4);
 }
 
@@ -287,12 +288,18 @@ static void gen_modrm_impl(int op_reg, int r, Sym *sym, int c, int is_got)
     op_reg = REG_VALUE(op_reg) << 3;
     if ((r & VT_VALMASK) == VT_CONST) {
         /* constant memory reference */
-        o(0x05 | op_reg);
-        if (is_got) {
-            gen_gotpcrel(r, sym, c);
-        } else {
-            gen_addrpc32(r, sym, c);
-        }
+	if (!(r & VT_SYM)) {
+	    /* Absolute memory reference */
+	    o(0x04 | op_reg); /* [sib] | destreg */
+	    oad(0x25, c);     /* disp32 */
+	} else {
+	    o(0x05 | op_reg); /* (%rip)+disp32 | destreg */
+	    if (is_got) {
+		gen_gotpcrel(r, sym, c);
+	    } else {
+		gen_addrpc32(r, sym, c);
+	    }
+	}
     } else if ((r & VT_VALMASK) == VT_LOCAL) {
         /* currently, we use only ebp as base */
         if (c == (char)c) {
@@ -380,6 +387,19 @@ void load(int r, SValue *sv)
                 fr = get_reg(RC_INT);
             load(fr, &v1);
         }
+	if (fc != sv->c.i) {
+	    /* If the addends doesn't fit into a 32bit signed
+	       we must use a 64bit move.  We've checked above
+	       that this doesn't have a sym associated.  */
+	    v1.type.t = VT_LLONG;
+	    v1.r = VT_CONST;
+	    v1.c.i = sv->c.i;
+	    fr = r;
+	    if (!(reg_classes[fr] & (RC_INT|RC_R11)))
+	        fr = get_reg(RC_INT);
+	    load(fr, &v1);
+	    fc = 0;
+	}
         ll = 0;
 	/* Like GCC we can load from small enough properly sized
 	   structs and unions as well.
@@ -1014,6 +1034,7 @@ void gfunc_epilog(void)
     saved_ind = ind;
     ind = func_sub_sp_offset - FUNC_PROLOG_SIZE;
     /* align local size to word & save local variables */
+    func_scratch = (func_scratch + 15) & -16;
     v = (func_scratch + -loc + 15) & -16;
 
     if (v >= 4096) {
@@ -2201,6 +2222,14 @@ ST_FUNC void gen_vla_sp_save(int addr) {
 ST_FUNC void gen_vla_sp_restore(int addr) {
     gen_modrm64(0x8b, TREG_RSP, VT_LOCAL, NULL, addr);
 }
+
+#ifdef TCC_TARGET_PE
+/* Save result of gen_vla_alloc onto the stack */
+ST_FUNC void gen_vla_result(int addr) {
+    /* mov %rax,addr(%rbp)*/
+    gen_modrm64(0x89, TREG_RAX, VT_LOCAL, NULL, addr);
+}
+#endif
 
 /* Subtract from the stack pointer, and push the resulting value onto the stack */
 ST_FUNC void gen_vla_alloc(CType *type, int align) {

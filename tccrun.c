@@ -45,14 +45,12 @@ static void set_exception_handler(void);
 #endif
 
 static void set_pages_executable(void *ptr, unsigned long length);
-static int tcc_relocate_ex(TCCState *s1, void *ptr);
+static int tcc_relocate_ex(TCCState *s1, void *ptr, addr_t ptr_diff);
 
 #ifdef _WIN64
 static void *win64_add_function_table(TCCState *s1);
 static void win64_del_function_table(void *);
 #endif
-
-// #define HAVE_SELINUX
 
 /* ------------------------------------------------------------- */
 /* Do all relocations (needed before using tcc_get_symbol())
@@ -61,25 +59,36 @@ static void win64_del_function_table(void *);
 LIBTCCAPI int tcc_relocate(TCCState *s1, void *ptr)
 {
     int size;
+    addr_t ptr_diff = 0;
 
     if (TCC_RELOCATE_AUTO != ptr)
-        return tcc_relocate_ex(s1, ptr);
+        return tcc_relocate_ex(s1, ptr, 0);
 
-    size = tcc_relocate_ex(s1, NULL);
+    size = tcc_relocate_ex(s1, NULL, 0);
     if (size < 0)
         return -1;
 
 #ifdef HAVE_SELINUX
-    /* Use mmap instead of malloc for Selinux. */
-    ptr = mmap (NULL, size, PROT_READ|PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (ptr == MAP_FAILED)
-        tcc_error("tccrun: could not map memory");
+{
+    /* Using mmap instead of malloc */
+    void *prx;
+    char tmpfname[] = "/tmp/.tccrunXXXXXX";
+    int fd = mkstemp(tmpfname);
+    unlink(tmpfname);
+    ftruncate(fd, size);
+
+    ptr = mmap (NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    prx = mmap (NULL, size, PROT_READ|PROT_EXEC, MAP_SHARED, fd, 0);
+    if (ptr == MAP_FAILED || prx == MAP_FAILED)
+	tcc_error("tccrun: could not map memory");
     dynarray_add(&s1->runtime_mem, &s1->nb_runtime_mem, (void*)(addr_t)size);
+    dynarray_add(&s1->runtime_mem, &s1->nb_runtime_mem, prx);
+    ptr_diff = (char*)prx - (char*)ptr;
+}
 #else
     ptr = tcc_malloc(size);
 #endif
-    tcc_relocate_ex(s1, ptr); /* no more errors expected */
+    tcc_relocate_ex(s1, ptr, ptr_diff); /* no more errors expected */
     dynarray_add(&s1->runtime_mem, &s1->nb_runtime_mem, ptr);
     return 0;
 }
@@ -91,6 +100,7 @@ ST_FUNC void tcc_run_free(TCCState *s1)
     for (i = 0; i < s1->nb_runtime_mem; ++i) {
 #ifdef HAVE_SELINUX
         unsigned size = (unsigned)(addr_t)s1->runtime_mem[i++];
+        munmap(s1->runtime_mem[i++], size);
         munmap(s1->runtime_mem[i], size);
 #else
 #ifdef _WIN64
@@ -166,7 +176,7 @@ LIBTCCAPI int tcc_run(TCCState *s1, int argc, char **argv)
 
 /* relocate code. Return -1 on error, required size if ptr is NULL,
    otherwise copy code into buffer passed by the caller */
-static int tcc_relocate_ex(TCCState *s1, void *ptr)
+static int tcc_relocate_ex(TCCState *s1, void *ptr, addr_t ptr_diff)
 {
     Section *s;
     unsigned offset, length, fill, i, k;
@@ -178,8 +188,7 @@ static int tcc_relocate_ex(TCCState *s1, void *ptr)
         pe_output_file(s1, NULL);
 #else
         tcc_add_runtime(s1);
-        relocate_common_syms();
-        tcc_add_linker_symbols(s1);
+	resolve_common_syms(s1);
         build_got_entries(s1);
 #endif
         if (s1->nb_errors)
@@ -199,7 +208,12 @@ static int tcc_relocate_ex(TCCState *s1, void *ptr)
             if (k != !(s->sh_flags & SHF_EXECINSTR))
                 continue;
             offset += fill;
-            s->sh_addr = mem ? mem + offset : 0;
+            if (!mem)
+                s->sh_addr = 0;
+            else if (s->sh_flags & SHF_EXECINSTR)
+                s->sh_addr = mem + offset + ptr_diff;
+            else
+                s->sh_addr = mem + offset;
 #if 0
             if (mem)
                 printf("%-16s +%02lx %p %04x\n",
@@ -224,6 +238,10 @@ static int tcc_relocate_ex(TCCState *s1, void *ptr)
     if (0 == mem)
         return offset + RUN_SECTION_ALIGNMENT;
 
+#ifdef TCC_TARGET_PE
+    s1->pe_imagebase = mem;
+#endif
+
     /* relocate each section */
     for(i = 1; i < s1->nb_sections; i++) {
         s = s1->sections[i];
@@ -232,24 +250,27 @@ static int tcc_relocate_ex(TCCState *s1, void *ptr)
     }
     relocate_plt(s1);
 
-#ifdef _WIN64
-    *(void**)ptr = win64_add_function_table(s1);
-#endif
-
     for(i = 1; i < s1->nb_sections; i++) {
         s = s1->sections[i];
         if (0 == (s->sh_flags & SHF_ALLOC))
             continue;
         length = s->data_offset;
         ptr = (void*)s->sh_addr;
+        if (s->sh_flags & SHF_EXECINSTR)
+            ptr = (char*)ptr - ptr_diff;
         if (NULL == s->data || s->sh_type == SHT_NOBITS)
             memset(ptr, 0, length);
         else
             memcpy(ptr, s->data, length);
         /* mark executable sections as executable in memory */
         if (s->sh_flags & SHF_EXECINSTR)
-            set_pages_executable(ptr, length);
+            set_pages_executable((char*)ptr + ptr_diff, length);
     }
+
+#ifdef _WIN64
+    *(void**)mem = win64_add_function_table(s1);
+#endif
+
     return 0;
 }
 
@@ -263,15 +284,17 @@ static void set_pages_executable(void *ptr, unsigned long length)
     VirtualProtect(ptr, length, PAGE_EXECUTE_READWRITE, &old_protect);
 #else
     void __clear_cache(void *beginning, void *end);
+# ifndef HAVE_SELINUX
     addr_t start, end;
-#ifndef PAGESIZE
-# define PAGESIZE 4096
-#endif
+#  ifndef PAGESIZE
+#   define PAGESIZE 4096
+#  endif
     start = (addr_t)ptr & ~(PAGESIZE - 1);
     end = (addr_t)ptr + length;
     end = (end + PAGESIZE - 1) & ~(PAGESIZE - 1);
     if (mprotect((void *)start, end - start, PROT_READ | PROT_WRITE | PROT_EXEC))
         tcc_error("mprotect failed: did you mean to configure --with-selinux?");
+# endif
 # if defined TCC_TARGET_ARM || defined TCC_TARGET_ARM64
     __clear_cache(ptr, (char *)ptr + length);
 # endif
@@ -287,11 +310,11 @@ static void *win64_add_function_table(TCCState *s1)
         RtlAddFunctionTable(
             (RUNTIME_FUNCTION*)p,
             s1->uw_pdata->data_offset / sizeof (RUNTIME_FUNCTION),
-            text_section->sh_addr
+            s1->pe_imagebase
             );
         s1->uw_pdata = NULL;
     }
-    return p;;
+    return p;
 }
 
 static void win64_del_function_table(void *p)
@@ -420,7 +443,7 @@ no_stabs:
                 if (wanted_pc >= sym->st_value &&
                     wanted_pc < sym->st_value + sym->st_size) {
                     pstrcpy(last_func_name, sizeof(last_func_name),
-                            (char *) strtab_section->data + sym->st_name);
+                            (char *) symtab_section->link->data + sym->st_name);
                     func_addr = sym->st_value;
                     goto found;
                 }
