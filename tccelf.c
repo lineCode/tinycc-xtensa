@@ -960,6 +960,7 @@ static struct sym_attr * put_got_entry(TCCState *s1, int dyn_reloc_type,
 
     sym = &((ElfW(Sym) *) symtab_section->data)[sym_index];
     name = (char *) symtab_section->link->data + sym->st_name;
+	printf( "Gen got entry: %d [%s]\n", s1->got->data_offset, name );
 
     if (s1->dynsym) {
 	if (ELFW(ST_BIND)(sym->st_info) == STB_LOCAL) {
@@ -1368,7 +1369,9 @@ static void fill_local_got_entries(TCCState *s1)
 	    struct sym_attr *attr = get_sym_attr(s1, sym_index, 0);
 	    unsigned offset = attr->got_offset;
 	    if (offset != rel->r_offset - s1->got->sh_addr)
-	      tcc_error_noabort("huh");
+            {
+                tcc_error_noabort("Internal Compiler GOT reference malformed; %d != %d - %d\n", offset, rel->r_offset, s1->got->sh_offset );
+            }
 	    rel->r_info = ELFW(R_INFO)(0, R_RELATIVE);
 #if SHT_RELX == SHT_RELA
 	    rel->r_addend = sym->st_value;

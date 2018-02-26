@@ -1,5 +1,5 @@
 /* 
- * Copyright (C) 2017 <>< Charles Lohr
+ * Copyright (C) 2017, 2018 <>< Charles Lohr
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -104,7 +104,7 @@ ST_DATA const int reg_classes[NB_REGS] = {
 	RC_INT | RC_LR,
 };
 
-/* USEFUL STUFF:
+/* USEFUL HINTS:
 
 "goto" and JavaScript:
     TODO: Write this section.
@@ -121,23 +121,32 @@ Patching, etc.
 	chain.
 
 
-
 */
 
 
-/* The g / gprintf functions are for emitting code.  This is normally done for
-   assembly opcodes, however, we can abuse it and output plain text into ELF 
-   sections. g updates 'ind' which is a pointer to where we are in the section
-   using this, we can update positions. */
-ST_FUNC void g(char c)
+/*
+   The g_emit_char / gprintf functions are for emitting code.  This is normally
+   done for assembly opcodes, however, we can abuse it and output plain text
+   into ELF sections. g_emit_char updates 'ind' which is a pointer to where we
+   are in the section using this, we can update positions.
+
+   It is important to note that in this target it is only used in gprintf. This
+   does not hold for most targets.  
+
+   Most targets use this, or g(...) or o(...) to emit code.  Theme being you
+   need to have some mechanism to actually emit object code.
+ */
+
+ST_FUNC void g_emit_char(char c)
 {
 	int ind1;
 
-
 	if (nocode_wanted)
 		return;
+
 	ind1 = ind + 1;
-	if (ind1 > cur_text_section->data_allocated)
+
+	if( ind1 > cur_text_section->data_allocated )
 	{
 		section_realloc(cur_text_section, ind1);
 	}
@@ -165,7 +174,7 @@ ST_FUNC void gprintf( const char * format, ... )
 
 	while( ( c = (*(buffptr++)) ) )
 	{
-		g( c );
+		g_emit_char( c );
 		putchar( c );
 	}
 }
@@ -173,7 +182,8 @@ ST_FUNC void gprintf( const char * format, ... )
 /* output a symbol and patch all calls to it */
 ST_FUNC void gsym_addr(int t, int a)
 {
-	/* This looks a little weird but handles patching.  This is so you can say
+	/* 
+	   This looks a little weird but handles patching.  This is so you can say
 	   "I'm going to update a symbol, somewhere in the future.  You don't have
 	   to know where you'll be jumping exactly.  Once the target is generated,
 	   this code will go back and update refrences to it.  Also, it's treated
@@ -186,30 +196,38 @@ ST_FUNC void gsym_addr(int t, int a)
 		unsigned char *ptr = cur_text_section->data + t;
 		uint32_t n;  /* next value */
 		char buff[11];
+
+		/* Buffer for the symbol.  For Javascript, we use symbols that
+		   are actually just 8 hex digits to form a 32-bit value. */
 		int r;
 
-		/* We look back and see if the value we're patching points back even
-		   further.  We can see this because we use an eight-digit hex number
-		   to represent states. */
+		/* We look back and see if the value we're patching points back
+		   even further.  We can see this because we use an eight-digit
+		   hex number to represent states. */
 		r = sscanf(ptr, "%08x", &n);
 
 		if( r < 1 )
-			tcc_error( "Can't patch %d pointer at bad location: %d: %s", ind, 
-				t, ptr ); 
+		{
+			tcc_error( "Can't patch %d pointer at bad location: %d: %s",
+				ind, t, ptr ); 
+		}
 
-		/* Overwrite the text where it was with the new target location. 
-		   normally, you can just overwrite the raw data, but JS is human-
-		   readable. */
+		/* Overwrite the text where it was with the new target
+		   location. Normally, you can just overwrite the raw data, but
+		   JS is human-readable, so we have to print out the value we
+		   are writing in, as a hex value.  We have to do this weird
+		   double copy so sprintf doesn't write in a null character
+		*/
 		sprintf( buff, "%08x", a );
 		memcpy( ptr, buff, 8 );
 		t = n;
 	}
 
+	/* XXX TODO XXX TODO XXX TODO XXX TODO XXX TODO XXX TODO */
 	/* vvv what does greloc do?  I gotta figure out how this works. */
 	/* 
 	 greloc(cur_text_section, sym, t, R_JS_CODE_ABS32); //S, Sym, Offset, Type
 	*/
-
 	if( !t )
 	{
 		gprintf( "	case 0x%08x:\n", ind );
@@ -218,10 +236,12 @@ ST_FUNC void gsym_addr(int t, int a)
 	{
 		gprintf( "	case 0x%08x: //Patch %08x\n", ind, t );
 	}
-
 	/* XXX TODO: Also, patch the sym in the GOT/PLT table? */
 }
 
+/* In all TCC targets, it seems that this is done as shorthand of saying please
+   emit this symbol, and then, it will handle placing it at the the end of the
+   code segment that's currently being worked on. */
 ST_FUNC void gsym(int t)
 {
 	gsym_addr(t, ind);
@@ -454,11 +474,8 @@ ST_FUNC void load(int r, SValue *sv)
 			{
 				int backupind = 0;
 				gprintf( "	cpua%d = /*read indirect from*/ ( 0x", r );
-				if(fr & VT_SYM)
-				{
-					backupind = ind;
-					greloc(cur_text_section, sv->sym, ind, R_JS_DATA_ABS32);
-				}
+				backupind = ind;
+				greloc(cur_text_section, sv->sym, ind, R_JS_DATA_ABS32);
 				gprintf( "%08x ); /* greloc at: %x (fc=%d, sign=%d) */\n", sv->c.i, backupind, fc, sign );
 			}
 			else
@@ -471,6 +488,7 @@ ST_FUNC void load(int r, SValue *sv)
 			gprintf( "Load LOCAL [r:%d fc:%d sv->c.i:%d sign:%d]\n", r, fc, sv->c.i, sign );
 			if (fr & VT_SYM ) {
 				greloc(cur_text_section, sv->sym, ind, R_JS_DATA_ABS32);
+				gprintf( " /* XXX UNSAFE greloc at: %x\n", sv->c.i );
 			}
 			return;
 		} else if(v == VT_CMP) {
@@ -500,7 +518,7 @@ ST_FUNC void load(int r, SValue *sv)
 ST_FUNC int gjmp(int t)
 {
 	int ret = ind+11;		//Set patch address to current location + the offset to the "00000000" in code_.
-	gprintf( "	state = 0x%08x|0; continue looptop; //gjmp(%d) r: %x t: %x vtop->c.i: %x %x RET: %x\n", t, t, ind, t, vtop->c.i, vtop->r, ret );
+	gprintf( "	state = 0x%08x|0; continue; //gjmp(%d) r: %x t: %x vtop->c.i: %x %x RET: %x\n", t, t, ind, t, vtop->c.i, vtop->r, ret );
 	return ret;
 }
 
@@ -672,19 +690,19 @@ ST_FUNC void gfunc_prolog(CType *func_type)
 	{
 		int function_end_ind = ind + 78;
 		gprintf( "	var state = 0x%08x|0;\n", function_end_ind );
-		gprintf( "	looptop: do { switch( state ) {\n" );
+		gprintf( "	do { switch( state ) {\n" );
 		gprintf( "	case 0x");
 		gprintf( "%08x:\n", function_end_ind );
 	}
 }
 
-/* generate function epilog */
+/* generate function epilog, i.e. the end of a function. */
 ST_FUNC void gfunc_epilog(void)
 {
 	//Use func_ret_type, too!!!
 	//ind -= 4;
 
-	gprintf( "	default: break looptop; } } while( true );\n" );
+	gprintf( "	default: break; } } while( true );\n" );
 
 	//XXX TODO: How do we return structures?
 	//XXX TODO: Right now this doesn't actually return anything.
@@ -730,7 +748,10 @@ static const char * mapcc( int cc )
 }
 
 #if 0
-//XXX TODO: This function should be used when 'inv' is sent.
+/* NOTE: This function should be used when 'inv' is sent.  While that is the
+   normal use, we can kind of take a shortcut here and just invert results...
+*/
+
 static int negcc(int cc)
 {
   switch(cc)
@@ -776,9 +797,12 @@ printf( "gtst(%d, %d, %d, %d  %d %d)\n",v, inv, t, ind, vtop->r, nocode_wanted )
 	{
 		//const char * op=mapcc(inv?negcc(vtop->c.i):vtop->c.i);
 		//printf( "Encode branch CMP: %d %d <<%s>>   %d\n", r, t, op, vtop->c.i );
+
+		//XXX BIG NOTE FOR OPTIMIZERS
+
 		gprintf( "	if( cpua0 %c= 0 )   state = 0x", inv?'=':'!' );
 		t = ind;
-		gprintf( "00000000|0; continue looptop; //r: %x t: %x vtop->c.i: %x %x\n", r, t, vtop->c.i, vtop->r );
+		gprintf( "00000000|0; continue; //r: %x t: %x vtop->c.i: %x %x\n", r, t, vtop->c.i, vtop->r );
 		gprintf( "	//Setting t = %d\n", t );
 
 	}
@@ -1001,7 +1025,7 @@ void ggoto(void)
 		gprintf( "	state = 0x" );
 		if (vtop->r & VT_SYM)
 			greloc(cur_text_section, vtop->sym, ind, R_JS_CODE_ABS32);
-		gprintf( "00000000; continue looptop; /* gjmp with forward reloc */\n" );
+		gprintf( "00000000; continue; /* gjmp with forward greloc */\n" );
 		
 		tcc_error( "Unusual / confusing jump." );
 	} else {
@@ -1009,7 +1033,7 @@ void ggoto(void)
 		   absolute address of the target. */
 		r = gv(RC_INT);
 		tcc_error( "Cannot make cross-function goto calls with javascript target." );
-		gprintf( "	state = cpua%d; continue looptop; /* indirect call */", r );
+		gprintf( "	state = cpua%d; continue; /* indirect call */", r );
 	}
 	vtop--;
 }

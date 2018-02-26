@@ -806,6 +806,8 @@ LIBTCCAPI TCCState *tcc_new(void)
     tcc_define_symbol(s, "__aarch64__", NULL);
 #elif defined(TCC_TARGET_XTENSA)
     tcc_define_symbol(s, "__xtensa__", NULL);
+#elif defined(TCC_TARGET_JAVASCRIPT)
+    tcc_define_symbol(s, "__javascript__", NULL);
 #endif
 
 #ifdef TCC_TARGET_PE
