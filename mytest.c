@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 /*
 struct test
 {
@@ -39,11 +38,6 @@ int quickret( int a )
 {
 	return a+5;
 }
-=======
-int global;
-int dataarray[100];
-int global2;
->>>>>>> 41c6d85561416e047d1de89a91b6acd140aab52d
 
 
 int _start()

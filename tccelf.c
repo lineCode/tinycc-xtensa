@@ -1367,7 +1367,6 @@ static void fill_local_got_entries(TCCState *s1)
     if( !s1->got->reloc ) return;
     ElfW_Rel *rel;
     for_each_elem(s1->got->reloc, 0, rel, ElfW_Rel) {
-<<<<<<< HEAD
         if (ELFW(R_TYPE)(rel->r_info) == R_RELATIVE) {
 	        int sym_index = ELFW(R_SYM) (rel->r_info);
 	        ElfW(Sym) *sym = &((ElfW(Sym) *) symtab_section->data)[sym_index];
@@ -1376,18 +1375,6 @@ static void fill_local_got_entries(TCCState *s1)
 	        if (offset != rel->r_offset - s1->got->sh_addr)
                 tcc_error_noabort("huh");
 	        rel->r_info = ELFW(R_INFO)(0, R_RELATIVE);
-=======
-	if (ELFW(R_TYPE)(rel->r_info) == R_RELATIVE) {
-	    int sym_index = ELFW(R_SYM) (rel->r_info);
-	    ElfW(Sym) *sym = &((ElfW(Sym) *) symtab_section->data)[sym_index];
-	    struct sym_attr *attr = get_sym_attr(s1, sym_index, 0);
-	    unsigned offset = attr->got_offset;
-	    if (offset != rel->r_offset - s1->got->sh_addr)
-            {
-                tcc_error_noabort("Internal Compiler GOT reference malformed; %d != %d - %d\n", offset, rel->r_offset, s1->got->sh_offset );
-            }
-	    rel->r_info = ELFW(R_INFO)(0, R_RELATIVE);
->>>>>>> 41c6d85561416e047d1de89a91b6acd140aab52d
 #if SHT_RELX == SHT_RELA
             rel->r_addend = sym->st_value;
 #else
