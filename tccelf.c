@@ -339,6 +339,8 @@ ST_FUNC int put_elf_sym(Section *s, addr_t value, unsigned long size,
     /* XXX: endianness */
     sym->st_name = name_offset;
     sym->st_value = value;
+//					printf( "Sym relocate C %p\n",  sym->st_value );
+
     sym->st_size = size;
     sym->st_info = info;
     sym->st_other = other;
@@ -1295,23 +1297,25 @@ ST_FUNC void fill_got(TCCState *s1)
    where GOT references to local defined symbols are rewritten.  */
 static void fill_local_got_entries(TCCState *s1)
 {
+	//This prevents crashes on non-PLT targets.
+    if( !s1->got->reloc ) return;
     ElfW_Rel *rel;
     for_each_elem(s1->got->reloc, 0, rel, ElfW_Rel) {
-	if (ELFW(R_TYPE)(rel->r_info) == R_RELATIVE) {
-	    int sym_index = ELFW(R_SYM) (rel->r_info);
-	    ElfW(Sym) *sym = &((ElfW(Sym) *) symtab_section->data)[sym_index];
-	    struct sym_attr *attr = get_sym_attr(s1, sym_index, 0);
-	    unsigned offset = attr->got_offset;
-	    if (offset != rel->r_offset - s1->got->sh_addr)
-	      tcc_error_noabort("huh");
-	    rel->r_info = ELFW(R_INFO)(0, R_RELATIVE);
+        if (ELFW(R_TYPE)(rel->r_info) == R_RELATIVE) {
+	        int sym_index = ELFW(R_SYM) (rel->r_info);
+	        ElfW(Sym) *sym = &((ElfW(Sym) *) symtab_section->data)[sym_index];
+	        struct sym_attr *attr = get_sym_attr(s1, sym_index, 0);
+            unsigned offset = attr->got_offset;
+	        if (offset != rel->r_offset - s1->got->sh_addr)
+                tcc_error_noabort("huh");
+	        rel->r_info = ELFW(R_INFO)(0, R_RELATIVE);
 #if SHT_RELX == SHT_RELA
-	    rel->r_addend = sym->st_value;
+            rel->r_addend = sym->st_value;
 #else
-	    /* All our REL architectures also happen to be 32bit LE.  */
-	    write32le(s1->got->data + offset, sym->st_value);
+            /* All our REL architectures also happen to be 32bit LE.  */
+            write32le(s1->got->data + offset, sym->st_value);
 #endif
-	}
+	    }
     }
 }
 
@@ -2158,6 +2162,7 @@ static int elf_output_file(TCCState *s1, const char *filename)
             for_each_elem(s1->dynsym, 1, sym, ElfW(Sym)) {
                 if (sym->st_shndx != SHN_UNDEF && sym->st_shndx < SHN_LORESERVE) {
                     /* do symbol relocation */
+					//printf( "Sym relocate A: %p+=%p  (%d)\n",  sym->st_value, s1->sections[sym->st_shndx]->sh_addr , sym->st_shndx);
                     sym->st_value += s1->sections[sym->st_shndx]->sh_addr;
                 }
             }
@@ -2450,6 +2455,8 @@ ST_FUNC int tcc_load_object_file(TCCState *s1,
             /* convert section number */
             sym->st_shndx = sm->s->sh_num;
             /* offset value */
+//					printf( "Sym relocate B: %p+=%p\n",  sym->st_value, sm->offset );
+
             sym->st_value += sm->offset;
         }
         /* add symbol */

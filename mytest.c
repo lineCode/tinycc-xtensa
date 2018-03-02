@@ -1,3 +1,4 @@
+/*
 struct test
 {
 	int a, b, c, d, e, f, g, h, i;
@@ -77,4 +78,26 @@ int _start()
 	strtest( "hello, world" );
 	return MyTest( 0xdeadbeef, 9, 6, t );
 }
+*/
 
+int unused_int_value;
+int a;
+int mid[10];
+int my_test_value;
+extern int my_test_extern;
+int test();
+const int const_int_test = 99;
+
+int _start()
+{
+	a = 5;
+	my_test_extern = 9;
+	my_test_value = 6;
+	my_test_value = const_int_test;
+	return my_test_extern;
+}
+
+int bt()
+{
+	my_test_extern = 9;
+}
