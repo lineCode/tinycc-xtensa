@@ -2234,6 +2234,9 @@ void float_test(void)
     double da, db;
     int a;
     unsigned int b;
+    static double nan2 = 0.0/0.0;
+    static double inf1 = 1.0/0.0;
+    static double inf2 = 1e5000;
 
     printf("float_test:\n");
     printf("sizeof(float) = %d\n", sizeof(float));
@@ -2255,6 +2258,7 @@ void float_test(void)
     b = 4000000000;
     db = b;
     printf("db = %f\n", db);
+    printf("nan != nan = %d, inf1 = %f, inf2 = %f\n", nan2 != nan2, inf1, inf2);
 #endif
 }
 
@@ -3235,6 +3239,7 @@ void asm_local_statics (void)
 }
 #endif
 
+static
 unsigned int set;
 
 void fancy_copy (unsigned *in, unsigned *out)
@@ -3247,7 +3252,7 @@ void fancy_copy2 (unsigned *in, unsigned *out)
   asm volatile ("mov %0,(%1)" : : "r" (*in), "r" (out) : "memory");
 }
 
-#ifdef __x86_64__
+#if defined __x86_64__ && !defined _WIN64
 void clobber_r12(void)
 {
     asm volatile("mov $1, %%r12" ::: "r12");
@@ -3256,7 +3261,7 @@ void clobber_r12(void)
 
 void test_high_clobbers(void)
 {
-#ifdef __x86_64__
+#if defined __x86_64__ && !defined _WIN64
     register long val asm("r12");
     long val2;
     /* This tests if asm clobbers correctly save/restore callee saved
@@ -3265,10 +3270,8 @@ void test_high_clobbers(void)
        correctly capture the data flow, but good enough for us.  */
     asm volatile("mov $0x4542, %%r12" : "=r" (val):: "memory");
     clobber_r12();
-#ifndef _WIN64
     asm volatile("mov %%r12, %0" : "=r" (val2) : "r" (val): "memory");
     printf("asmhc: 0x%x\n", val2);
-#endif
 #endif
 }
 
@@ -3344,6 +3347,62 @@ void test_asm_dead_code(void)
       asm volatile ("movl $0,(%0)" : : "D" (&var) : "memory");
       var;
   }));
+}
+
+void test_asm_call(void)
+{
+#if defined __x86_64__ && !defined _WIN64
+  static char str[] = "PATH";
+  char *s;
+  /* This tests if a reference to an undefined symbol from an asm
+     block, which isn't otherwise referenced in this file, is correctly
+     regarded as global symbol, so that it's resolved by other object files
+     or libraries.  We chose getenv here, which isn't used anywhere else
+     in this file.  (If we used e.g. printf, which is used we already
+     would have a global symbol entry, not triggering the bug which is
+     tested here).  */
+  /* two pushes so stack remains aligned */
+  asm volatile ("push %%rdi; push %%rdi; mov %0, %%rdi;"
+#if 1 && !defined(__TINYC__) && (defined(__PIC__) || defined(__PIE__))
+		"call getenv@plt;"
+#else
+		"call getenv;"
+#endif
+		"pop %%rdi; pop %%rdi"
+		: "=a" (s) : "r" (str));
+  printf("asmd: %s\n", s);
+#endif
+}
+
+#if defined __x86_64__
+# define RX "(%rip)"
+#else
+# define RX
+#endif
+
+void asm_dot_test(void)
+{
+    int x;
+    for (x = 1;; ++x) {
+        int r = x;
+        switch (x) {
+        case 1:
+            asm(".text; lea S"RX",%eax; lea ."RX",%ecx; sub %ecx,%eax; S=.; jmp p0");
+        case 2:
+            asm(".text; jmp .+6; .int 123; mov .-4"RX",%eax; jmp p0");
+	case 3:
+            asm(".data; Y=.; .int 999; X=Y; .int 456; X=.-4");
+            asm(".text; mov X"RX",%eax; jmp p0");
+        case 4:
+            asm(".data; X=.; .int 789; Y=.; .int 999");
+            asm(".text; mov X"RX",%eax; X=Y; jmp p0");
+        case 0:
+	    asm(".text; p0=.; mov %%eax,%0;" : "=m"(r)); break;
+	}
+        if (r == x)
+            break;
+        printf("asm_dot_test %d: %d\n", x, r);
+    }
 }
 
 void asm_test(void)
@@ -3432,6 +3491,8 @@ void asm_test(void)
     test_high_clobbers();
     trace_console(8, 8);
     test_asm_dead_code();
+    test_asm_call();
+    asm_dot_test();
     return;
  label1:
     goto label2;

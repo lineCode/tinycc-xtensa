@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 /*
 struct test
 {
@@ -38,45 +39,17 @@ int quickret( int a )
 {
 	return a+5;
 }
+=======
+int global;
+int dataarray[100];
+int global2;
+>>>>>>> 41c6d85561416e047d1de89a91b6acd140aab52d
 
-int strtest( const char * st )
-{
-	int ret = 0;
-	int c;
-	while( (c = *(st++)) )
-		ret += c;
-	return ret;
-}
-
-void AnotherTest( int k )
-{
-	int a;
-	int r;
-	for( a = 0; a < k; a++ )
-	{
-		r = r + 1;
-	}
-	//global = global + 5;
-}
-
-void VoidTest()
-{
-reglob:
-	global++;
-	if( global < 100 ) goto reglob;
-}
 
 int _start()
 {
-	struct test t;
-	t.a = 4;
-	t.g = 6;
 	global++;
 	global2++;
-	VoidTest();
-	AnotherTest(1);
-	strtest( "hello, world" );
-	return MyTest( 0xdeadbeef, 9, 6, t );
 }
 */
 

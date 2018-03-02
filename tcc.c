@@ -86,7 +86,6 @@ static const char help2[] =
     "  -Wp,-opt                      same as -opt\n"
     "  -include file                 include 'file' above each input file\n"
     "  -isystem dir                  add 'dir' to system include path\n"
-    "  -iwithprefix dir              set tcc's private include/library subdir\n"
     "  -static                       link to static libraries (not recommended)\n"
     "  -dumpversion                  print version\n"
     "  -print-search-dirs            print search paths\n"
@@ -183,9 +182,9 @@ static void print_search_dirs(TCCState *s)
     /* print_dirs("programs", NULL, 0); */
     print_dirs("include", s->sysinclude_paths, s->nb_sysinclude_paths);
     print_dirs("libraries", s->library_paths, s->nb_library_paths);
+    printf("libtcc1:\n  %s/"TCC_LIBTCC1"\n", s->tcc_lib_path);
 #ifndef TCC_TARGET_PE
     print_dirs("crt", s->crt_paths, s->nb_crt_paths);
-    printf("libtcc1:\n  %s/"TCC_LIBTCC1"\n", s->tcc_lib_path);
     printf("elfinterp:\n  %s\n",  DEFAULT_ELFINTERP(s));
 #endif
 }
@@ -196,7 +195,7 @@ static void set_environment(TCCState *s)
 
     path = getenv("C_INCLUDE_PATH");
     if(path != NULL) {
-        tcc_add_include_path(s, path);
+        tcc_add_sysinclude_path(s, path);
     }
     path = getenv("CPATH");
     if(path != NULL) {
@@ -277,6 +276,7 @@ redo:
             return 0;
         if (opt == OPT_PRINT_DIRS) {
             /* initialize search dirs */
+            set_environment(s);
             tcc_set_output_type(s, TCC_OUTPUT_MEMORY);
             print_search_dirs(s);
             return 0;
@@ -298,8 +298,10 @@ redo:
             if (n > 1 && s->outfile)
                 tcc_error("cannot specify output file with -c many files");
         } else {
-            if (s->option_pthread)
+            if (s->option_pthread) {
                 tcc_set_options(s, "-lpthread");
+		n = s->nb_files;
+	    }
         }
 
         if (s->do_bench)
